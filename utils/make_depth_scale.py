@@ -27,7 +27,10 @@ def get_scales(key, cameras, images, points3d_ordered, args):
 
     invcolmapdepth = 1. / pts[..., 2] 
     n_remove = len(image_meta.name.split('.')[-1]) + 1
-    invmonodepthmap = cv2.imread(f"{args.depths_dir}/{image_meta.name[:-n_remove]}.png", cv2.IMREAD_UNCHANGED)
+    # print(image_meta.name[:-n_remove])
+    depth_filename = image_meta.name[:-n_remove].replace("rgb_", "depth_")
+    depth_filepath = f"{args.depths_dir}/{depth_filename}.png"
+    invmonodepthmap = cv2.imread(depth_filepath, cv2.IMREAD_UNCHANGED)
     
     if invmonodepthmap is None:
         return None
@@ -37,6 +40,7 @@ def get_scales(key, cameras, images, points3d_ordered, args):
 
     invmonodepthmap = invmonodepthmap.astype(np.float32) / (2**16)
     s = invmonodepthmap.shape[0] / cam_intrinsic.height
+    # print(f"s={s}")
 
     maps = (valid_xys * s).astype(np.float32)
     valid = (
@@ -61,7 +65,7 @@ def get_scales(key, cameras, images, points3d_ordered, args):
     else:
         scale = 0
         offset = 0
-    return {"image_name": image_meta.name[:-n_remove], "scale": scale, "offset": offset}
+    return {"image_name": depth_filename, "scale": scale, "offset": offset}
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
