@@ -24,18 +24,18 @@ from utils.sh_utils import SH2RGB
 from scene.gaussian_model import BasicPointCloud
 
 class CameraInfo(NamedTuple):
-    uid: int
-    R: np.array
-    T: np.array
-    FovY: np.array
-    FovX: np.array
-    depth_params: dict
-    image_path: str
-    image_name: str
-    depth_path: str
-    width: int
-    height: int
-    is_test: bool
+    uid: int  # 唯一标识符
+    R: np.array  # 世界坐标系到相机坐标系的旋转矩阵
+    T: np.array  # 世界坐标系到相机坐标系的平移向量
+    FovY: np.array  # 垂直视场角（弧度）
+    FovX: np.array  # 水平视场角（弧度）
+    depth_params: dict # 深度图相关参数
+    image_path: str  # RGB文件路径
+    image_name: str  # RGB文件名
+    depth_path: str  # 深度图文件路径
+    width: int  # RGB图像宽度（像素）
+    height: int  # RGB图像高度（像素）
+    is_test: bool  # 是否为测试视角
 
 class SceneInfo(NamedTuple):
     point_cloud: BasicPointCloud
@@ -107,7 +107,9 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, depths_params, images_fold
 
         image_path = os.path.join(images_folder, extr.name)
         image_name = extr.name
-        depth_path = os.path.join(depths_folder, f"{extr.name[:-n_remove]}.png") if depths_folder != "" else ""
+        # print(f"[dataset_readers] {extr.name[:-n_remove]}.png")
+        depth_filename = extr.name[:-n_remove].replace("rgb_", "depth_")
+        depth_path = os.path.join(depths_folder, f"{depth_filename}.png") if depths_folder != "" else ""
 
         cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, depth_params=depth_params,
                               image_path=image_path, image_name=image_name, depth_path=depth_path,
