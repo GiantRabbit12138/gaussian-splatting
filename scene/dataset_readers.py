@@ -98,17 +98,20 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, depths_params, images_fold
             assert False, "Colmap camera model not handled: only undistorted datasets (PINHOLE or SIMPLE_PINHOLE cameras) supported!"
 
         n_remove = len(extr.name.split('.')[-1]) + 1
+        original_name = extr.name[:-n_remove]
+        # 临时修改，兼容名称为depth_开头的深度图文件名称
+        # depth_filename = original_name if "mono" in depths_folder else original_name.replace("rgb_", "depth_")
+        depth_filename = original_name
         depth_params = None
         if depths_params is not None:
             try:
-                depth_params = depths_params[extr.name[:-n_remove]]
+                # depth_params = depths_params[extr.name[:-n_remove]]
+                depth_params = depths_params[depth_filename]
             except:
                 print("\n", key, "not found in depths_params")
 
         image_path = os.path.join(images_folder, extr.name)
         image_name = extr.name
-        # print(f"[dataset_readers] {extr.name[:-n_remove]}.png")
-        depth_filename = extr.name[:-n_remove].replace("rgb_", "depth_")
         depth_path = os.path.join(depths_folder, f"{depth_filename}.png") if depths_folder != "" else ""
 
         cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, depth_params=depth_params,

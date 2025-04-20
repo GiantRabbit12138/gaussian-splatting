@@ -33,6 +33,7 @@ import collections
 import numpy as np
 import struct
 import argparse
+import re
 
 
 CameraModel = collections.namedtuple(
@@ -266,6 +267,11 @@ def read_images_binary(path_to_model_file):
             while current_char != b"\x00":  # look for the ASCII 0 entry
                 image_name += current_char.decode("utf-8")
                 current_char = read_next_bytes(fid, 1, "c")[0]
+            # # 临时修改，将 frame 替换为 rgb，数字填充为5位
+            # if True:
+            #     # image_name = image_name.replace("frame", "rgb")
+            #     image_name = reformat_image_number(image_name, 5)
+            # print(image_name)
             num_points2D = read_next_bytes(
                 fid, num_bytes=8, format_char_sequence="Q"
             )[0]
@@ -560,6 +566,33 @@ def rotmat2qvec(R):
     if qvec[0] < 0:
         qvec *= -1
     return qvec
+
+def reformat_image_number(image_name: str, new_digits: int) -> str:
+    """
+    重构图片文件名中的数字部分为指定位数
+    
+    Args:
+        image_name: 原始文件名（格式：{prefix}_{number}.png）
+        new_digits: 新的数字位数
+        
+    Returns:
+        重构后的文件名
+    
+    Example:
+        >>> reformat_image_number("rgb_0001.png", 5)
+        'rgb_00001.png'
+    """
+    # 使用正则表达式提取数字部分
+    match = re.search(r'_(\d+)\.png$', image_name)
+    if not match:
+        raise ValueError(f"无效的文件名格式: {image_name}")
+
+    # 转换并重新格式化数字
+    original_number = int(match.group(1))
+    formatted_number = f"{original_number:0{new_digits}d}"
+    
+    # 替换数字部分
+    return re.sub(r'_(\d+)\.png$', f'_{formatted_number}.png', image_name)
 
 
 # def main():

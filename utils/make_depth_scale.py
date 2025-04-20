@@ -28,7 +28,8 @@ def get_scales(key, cameras, images, points3d_ordered, args):
     invcolmapdepth = 1. / pts[..., 2] 
     n_remove = len(image_meta.name.split('.')[-1]) + 1
     # print(image_meta.name[:-n_remove])
-    depth_filename = image_meta.name[:-n_remove].replace("rgb_", "depth_")
+    # depth_filename = image_meta.name[:-n_remove].replace("rgb_", "depth_")
+    depth_filename = image_meta.name[:-n_remove]
     depth_filepath = f"{args.depths_dir}/{depth_filename}.png"
     invmonodepthmap = cv2.imread(depth_filepath, cv2.IMREAD_UNCHANGED)
     
