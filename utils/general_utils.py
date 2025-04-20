@@ -14,6 +14,8 @@ import sys
 from datetime import datetime
 import numpy as np
 import random
+from PIL import Image
+from typing import Tuple
 
 def inverse_sigmoid(x):
     return torch.log(x/(1-x))
@@ -25,6 +27,63 @@ def PILtoTorch(pil_image, resolution):
         return resized_image.permute(2, 0, 1)
     else:
         return resized_image.unsqueeze(dim=-1).permute(2, 0, 1)
+    
+def PILtoTorchV2(pil_image: Image.Image, resolution: Tuple[int, int]) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Convert PIL image to PyTorch tensor with alpha channel processing.
+    
+    Args:
+        pil_image: Input PIL image (RGB/RGBA format)
+        resolution: Target resolution (width, height)
+    
+    Returns:
+        Tuple containing:
+        - image_tensor: Normalized RGB tensor in CxHxW format
+        - mask_tensor: Binary mask tensor (1xHxW) with values 0 or 1
+    """
+    # Process alpha channel if exists
+    alpha_pil = None
+    if pil_image.mode == 'RGBA':
+        # Separate RGB and alpha channels
+        image_np = np.array(pil_image)
+        rgb_np = image_np[..., :3]
+        # alpha_np = image_np[..., 3:]  # (720, 1280, 1)
+        # 修改点1：直接提取单通道 Alpha 数据
+        alpha_np = image_np[..., 3]  # 从 (H,W,4) 提取 (H,W)
+        
+        # Apply alpha premultiplication
+        masked_rgb_np = (rgb_np / 255.0) * (alpha_np[..., None] / 255.0)
+        masked_rgb_np = np.clip(masked_rgb_np, 0.0, 1.0)
+        pil_image = Image.fromarray((masked_rgb_np * 255).astype(np.uint8))
+        
+        # Create alpha PIL image
+        alpha_pil = Image.fromarray(alpha_np.astype(np.uint8))
+
+    # Resize main image
+    resized_image_pil = pil_image.resize(resolution)
+    
+    # Process alpha mask
+    if alpha_pil is not None:
+        # Resize and binarize alpha mask
+        resized_alpha_pil = alpha_pil.resize(resolution).convert('L')
+        alpha_tensor = torch.from_numpy(np.array(resized_alpha_pil)) / 255.0
+        mask_tensor = (alpha_tensor > 0.5).float()  # Binarization threshold at 0.5
+    else:
+        # Create all-ones mask if no alpha channel
+        mask_tensor = torch.ones(resolution[::-1], dtype=torch.float32)  # HxW
+    
+    # Convert RGB image to tensor
+    image_tensor = torch.from_numpy(np.array(resized_image_pil)) / 255.0
+    
+    # Adjust tensor dimensions
+    if len(image_tensor.shape) == 3:
+        image_tensor = image_tensor.permute(2, 0, 1)  # HWC -> CHW
+    else:
+        image_tensor = image_tensor.unsqueeze(0)      # HW -> CHW
+    
+    # Add channel dimension to mask
+    mask_tensor = mask_tensor.unsqueeze(0)  # HxW -> 1xHxW
+    
+    return image_tensor, mask_tensor
 
 def get_expon_lr_func(
     lr_init, lr_final, lr_delay_steps=0, lr_delay_mult=1.0, max_steps=1000000
