@@ -29,6 +29,8 @@ class CameraInfo(NamedTuple):
     T: np.array  # 世界坐标系到相机坐标系的平移向量
     FovY: np.array  # 垂直视场角（弧度）
     FovX: np.array  # 水平视场角（弧度）
+    cx: np.array
+    cy: np.array
     depth_params: dict # 深度图相关参数
     image_path: str  # RGB文件路径
     image_name: str  # RGB文件名
@@ -86,16 +88,24 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, depths_params, images_fold
         T = np.array(extr.tvec)
 
         if intr.model=="SIMPLE_PINHOLE":
+            cx = intr.params[1]
+            cy = intr.params[2]
             focal_length_x = intr.params[0]
             FovY = focal2fov(focal_length_x, height)
             FovX = focal2fov(focal_length_x, width)
         elif intr.model=="PINHOLE":
+            cx = intr.params[2]
+            cy = intr.params[3]
             focal_length_x = intr.params[0]
             focal_length_y = intr.params[1]
             FovY = focal2fov(focal_length_y, height)
             FovX = focal2fov(focal_length_x, width)
         else:
             assert False, "Colmap camera model not handled: only undistorted datasets (PINHOLE or SIMPLE_PINHOLE cameras) supported!"
+
+        # 计算投影矩阵中的偏移量
+        cx = (cx - width / 2) / width * 2
+        cy = (cy - height / 2) / height * 2
 
         n_remove = len(extr.name.split('.')[-1]) + 1
         original_name = extr.name[:-n_remove]
@@ -114,7 +124,7 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, depths_params, images_fold
         image_name = extr.name
         depth_path = os.path.join(depths_folder, f"{depth_filename}.png") if depths_folder != "" else ""
 
-        cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, depth_params=depth_params,
+        cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, cx=cx, cy=cy, depth_params=depth_params,
                               image_path=image_path, image_name=image_name, depth_path=depth_path,
                               width=width, height=height, is_test=image_name in test_cam_names_list)
         cam_infos.append(cam_info)
