@@ -45,6 +45,14 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
         gt = view.original_image[0:3, :, :]
         depth = results["depth"] * view.alpha_mask
         depth[(depth < 0)] = 0
+        # 生成深度分布直方图
+        plt.figure(figsize=(10,4))
+        plt.hist(results["depth"].detach().cpu().numpy().flatten(), bins=200, log=True)
+        plt.title(f"View {idx} Depth Distribution")
+        plt.xlabel("Depth Value")
+        plt.ylabel("Log Frequency")
+        plt.savefig(os.path.join(depth_path, f'{idx:05d}_hist.png'))
+        plt.close()
         depth = (depth / (depth.max() + 1e-5)).detach().cpu().numpy().squeeze()
         depth = (depth * 255).astype(np.uint8)
 
@@ -54,7 +62,14 @@ def render_set(model_path, name, iteration, views, gaussians, pipeline, backgrou
 
         torchvision.utils.save_image(rendering, os.path.join(render_path, '{0:05d}'.format(idx) + ".png"))
         torchvision.utils.save_image(gt, os.path.join(gts_path, '{0:05d}'.format(idx) + ".png"))
-        plt.imsave(os.path.join(depth_path, '{0:05d}'.format(idx) + ".png"), depth, cmap='jet')
+        # 带colorbar的版本
+        plt.figure(figsize=(10,8))
+        img = plt.imshow(depth, cmap='jet')
+        plt.colorbar(img, label='8 bit Depth [0-255]', shrink=0.8)
+        plt.axis('off')  # 可选：隐藏坐标轴
+        plt.savefig(os.path.join(depth_path, '{0:05d}'.format(idx) + ".png"), bbox_inches='tight', dpi=150)
+        plt.close()
+        # plt.imsave(os.path.join(depth_path, '{0:05d}'.format(idx) + ".png"), depth, cmap='jet')
 
 def render_sets(dataset : ModelParams, iteration : int, pipeline : PipelineParams, skip_train : bool, skip_test : bool, separate_sh: bool):
     with torch.no_grad():
