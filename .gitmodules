@@ -13,7 +13,7 @@
 	url = https://github.com/rahul-goel/fused-ssim.git
 [submodule "submodules/diff-gaussian-rasterization-opacity"]
 	path = submodules/diff-gaussian-rasterization-opacity
-	url = https://github.com/ashawkey/diff-gaussian-rasterization.git
+	url = https://github.com/GiantRabbit12138/diff-gaussian-rasterization.git
 [submodule "submodules/tiny-cuda-nn"]
 	path = submodules/tiny-cuda-nn
 	url = https://github.com/NVlabs/tiny-cuda-nn.git
