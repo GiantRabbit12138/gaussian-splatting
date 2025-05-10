@@ -3,7 +3,7 @@
 # GRAPHDECO research group, https://team.inria.fr/graphdeco
 # All rights reserved.
 #
-# This software is free for non-commercial, research and evaluation use 
+# This software is free for non-commercial, research and evaluation use
 # under the terms of the LICENSE.md file.
 #
 # For inquiries contact  george.drettakis@inria.fr
@@ -40,6 +40,11 @@ try:
 except:
     SPARSE_ADAM_AVAILABLE = False
 
+import numpy as np
+
+from quality_control import QualityController, register_default_iqa
+from quality_control.utils import depth_patch_loss
+
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
 
     if not SPARSE_ADAM_AVAILABLE and opt.optimizer_type == "sparse_adam":
@@ -60,16 +65,29 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     iter_start = torch.cuda.Event(enable_timing = True)
     iter_end = torch.cuda.Event(enable_timing = True)
 
-    use_sparse_adam = opt.optimizer_type == "sparse_adam" and SPARSE_ADAM_AVAILABLE 
+    use_sparse_adam = opt.optimizer_type == "sparse_adam" and SPARSE_ADAM_AVAILABLE
     depth_l1_weight = get_expon_lr_func(opt.depth_l1_weight_init, opt.depth_l1_weight_final, max_steps=opt.iterations)
 
     viewpoint_stack = scene.getTrainCameras().copy()
     viewpoint_indices = list(range(len(viewpoint_stack)))
     ema_loss_for_log = 0.0
     ema_Ll1depth_for_log = 0.0
+    ema_patch_loss_for_log = 0.0
 
     progress_bar = tqdm(range(first_iter, opt.iterations), desc="Training progress")
     first_iter += 1
+    # 创建保存目录（如果不存在）
+    save_dir = os.path.join(dataset.model_path, "depth_debug")
+    os.makedirs(save_dir, exist_ok=True)
+
+    # 在 training 函数中初始化 QualityController
+    quality_controller = QualityController(
+        patch_size=64,
+        device="cuda" if torch.cuda.is_available() else "cpu",
+        debug_dir=os.path.join(dataset.model_path, "quality_debug")
+    )
+    register_default_iqa(quality_controller)
+
     for iteration in range(first_iter, opt.iterations + 1):
         if network_gui.conn == None:
             network_gui.try_connect()
@@ -118,6 +136,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         # Loss
         gt_image = viewpoint_cam.original_image.cuda()
         Ll1 = l1_loss(image, gt_image)
+        # print(f"gt_image shape: {gt_image.shape}, image shape: {image.shape}")
         if FUSED_SSIM_AVAILABLE:
             ssim_value = fused_ssim(image.unsqueeze(0), gt_image.unsqueeze(0))
         else:
@@ -133,11 +152,63 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             depth_mask = viewpoint_cam.depth_mask.cuda()
 
             Ll1depth_pure = torch.abs((invDepth  - mono_invdepth) * depth_mask).mean()
-            Ll1depth = depth_l1_weight(iteration) * Ll1depth_pure 
+            Ll1depth = depth_l1_weight(iteration) * Ll1depth_pure
             loss += Ll1depth
             Ll1depth = Ll1depth.item()
         else:
             Ll1depth = 0
+            
+            
+        if iteration % 200 == 0 and viewpoint_cam.depth_reliable:
+            depth_mask = viewpoint_cam.depth_mask.cuda()
+            original_invdepthmap = viewpoint_cam.original_invdepthmap.cuda() * depth_mask
+            with torch.no_grad():
+                quality_mask = quality_controller.process(
+                    gt_rgb=gt_image,
+                    render_rgb=image,
+                    method='psnr',
+                    threshold=30.0,
+                    save_debug=True
+                )
+
+            # render_pkg_freeze_shape depth shape: torch.Size([1, 720, 1280])
+            # mono_invdepth shape: torch.Size([1, 720, 1280])
+            # quality_mask shape: torch.Size([1, 720, 1280])
+            # 计算损失
+            patch_loss = depth_patch_loss(
+                depth_render=render_pkg["depth"].unsqueeze(0),
+                depth_gt=original_invdepthmap.unsqueeze(0),
+                quality_mask=quality_mask.unsqueeze(1),
+                patch_size=64
+            )
+            # print(f"Patch loss: {patch_loss.item()}")
+            loss += depth_l1_weight(iteration) * patch_loss
+            
+            def normalize_depth(depth_tensor):
+                depth = depth_tensor.detach().cpu().numpy().squeeze()
+                depth_min = depth.min()
+                depth_max = depth.max()
+                if depth_max > depth_min:
+                    depth = (depth - depth_min) / (depth_max - depth_min) * 255
+                else:
+                    depth = np.zeros_like(depth)  # 防止全零或无效数据导致除零错误
+                return depth.astype(np.uint8)
+
+            depth_freeze_shape_normalized = normalize_depth(render_pkg["depth"])
+            original_invdepthmap_normalized = normalize_depth(original_invdepthmap)
+
+            combined_depth_np = np.hstack((depth_freeze_shape_normalized,
+                                           original_invdepthmap_normalized))
+
+            # 使用迭代次数命名并保存为 PNG 文件
+            save_path = os.path.join(save_dir, f"depth_map_iter_{iteration}.png")
+
+            # 保存为图像
+            from PIL import Image
+            Image.fromarray(combined_depth_np).save(save_path)
+            
+        else:
+            patch_loss = 0
 
         loss.backward()
 
@@ -147,9 +218,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             # Progress bar
             ema_loss_for_log = 0.4 * loss.item() + 0.6 * ema_loss_for_log
             ema_Ll1depth_for_log = 0.4 * Ll1depth + 0.6 * ema_Ll1depth_for_log
+            ema_patch_loss_for_log = 0.4 * patch_loss + 0.6 * ema_patch_loss_for_log
 
             if iteration % 10 == 0:
-                progress_bar.set_postfix({"Loss": f"{ema_loss_for_log:.{7}f}", "Depth Loss": f"{ema_Ll1depth_for_log:.{7}f}"})
+                progress_bar.set_postfix({"Loss": f"{ema_loss_for_log:.{7}f}", "Depth Loss": f"{ema_Ll1depth_for_log:.{7}f}", "Patch Loss": f"{ema_patch_loss_for_log:.{7}f}"})
                 progress_bar.update(10)
             if iteration == opt.iterations:
                 progress_bar.close()
@@ -169,7 +241,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
                     size_threshold = 20 if iteration > opt.opacity_reset_interval else None
                     gaussians.densify_and_prune(opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold, radii)
-                
+
                 if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                     gaussians.reset_opacity()
 
@@ -189,14 +261,14 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 print("\n[ITER {}] Saving Checkpoint".format(iteration))
                 torch.save((gaussians.capture(), iteration), scene.model_path + "/chkpnt" + str(iteration) + ".pth")
 
-def prepare_output_and_logger(args):    
+def prepare_output_and_logger(args):
     if not args.model_path:
         if os.getenv('OAR_JOB_ID'):
             unique_str=os.getenv('OAR_JOB_ID')
         else:
             unique_str = str(uuid.uuid4())
         args.model_path = os.path.join("./output/", unique_str[0:10])
-        
+
     # Set up output folder
     print("Output folder: {}".format(args.model_path))
     os.makedirs(args.model_path, exist_ok = True)
@@ -220,7 +292,7 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
     # Report test and samples of training set
     if iteration in testing_iterations:
         torch.cuda.empty_cache()
-        validation_configs = ({'name': 'test', 'cameras' : scene.getTestCameras()}, 
+        validation_configs = ({'name': 'test', 'cameras' : scene.getTestCameras()},
                               {'name': 'train', 'cameras' : [scene.getTrainCameras()[idx % len(scene.getTrainCameras())] for idx in range(5, 30, 5)]})
 
         for config in validation_configs:
@@ -241,7 +313,7 @@ def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_i
                     l1_test += l1_loss(image, gt_image).mean().double()
                     psnr_test += psnr(image, gt_image).mean().double()
                 psnr_test /= len(config['cameras'])
-                l1_test /= len(config['cameras'])          
+                l1_test /= len(config['cameras'])
                 print("\n[ITER {}] Evaluating {}: L1 {} PSNR {}".format(iteration, config['name'], l1_test, psnr_test))
                 if tb_writer:
                     tb_writer.add_scalar(config['name'] + '/loss_viewpoint - l1_loss', l1_test, iteration)
@@ -270,7 +342,7 @@ if __name__ == "__main__":
     parser.add_argument("--start_checkpoint", type=str, default = None)
     args = parser.parse_args(sys.argv[1:])
     args.save_iterations.append(args.iterations)
-    
+
     print("Optimizing " + args.model_path)
 
     # Initialize system state (RNG)
