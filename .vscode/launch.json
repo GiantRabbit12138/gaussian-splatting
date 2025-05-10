@@ -10,7 +10,7 @@
             "request": "launch",
             "program": "${workspaceFolder}/train.py",
             "console": "integratedTerminal",
-            "args": "-s ./data/cuboid_colmap -i images -d depths/ --eval"
+            "args": "-s ./data/book -i images -d depths/ --eval"
         }
     ]
 }
