@@ -158,7 +158,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         else:
             Ll1depth = 0
             
-            
+        patch_loss_pure = torch.tensor(0., device=loss.device)
         if iteration % 200 == 0 and viewpoint_cam.depth_reliable:
             depth_mask = viewpoint_cam.depth_mask.cuda()
             original_invdepthmap = viewpoint_cam.original_invdepthmap.cuda() * depth_mask
@@ -168,47 +168,57 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                     render_rgb=image,
                     method='psnr',
                     threshold=30.0,
-                    save_debug=True
+                    save_debug=False
                 )
 
-            # render_pkg_freeze_shape depth shape: torch.Size([1, 720, 1280])
-            # mono_invdepth shape: torch.Size([1, 720, 1280])
             # quality_mask shape: torch.Size([1, 720, 1280])
             # 计算损失
-            patch_loss = depth_patch_loss(
+            patch_loss_pure = depth_patch_loss(
                 depth_render=render_pkg["depth"].unsqueeze(0),
                 depth_gt=original_invdepthmap.unsqueeze(0),
                 quality_mask=quality_mask.unsqueeze(1),
                 patch_size=64
             )
-            # print(f"Patch loss: {patch_loss.item()}")
-            loss += depth_l1_weight(iteration) * patch_loss
+            patch_loss = depth_l1_weight(iteration) * patch_loss_pure
+            loss += patch_loss
+            # patch_loss = patch_loss.item()
             
-            def normalize_depth(depth_tensor):
-                depth = depth_tensor.detach().cpu().numpy().squeeze()
-                depth_min = depth.min()
-                depth_max = depth.max()
-                if depth_max > depth_min:
-                    depth = (depth - depth_min) / (depth_max - depth_min) * 255
-                else:
-                    depth = np.zeros_like(depth)  # 防止全零或无效数据导致除零错误
-                return depth.astype(np.uint8)
+            # def normalize_depth(depth_tensor):
+            #     depth = depth_tensor.detach().cpu().numpy().squeeze()
+            #     depth_min = depth.min()
+            #     depth_max = depth.max()
+            #     if depth_max > depth_min:
+            #         depth = (depth - depth_min) / (depth_max - depth_min) * 255
+            #     else:
+            #         depth = np.zeros_like(depth)  # 防止全零或无效数据导致除零错误
+            #     return depth.astype(np.uint8)
 
-            depth_freeze_shape_normalized = normalize_depth(render_pkg["depth"])
-            original_invdepthmap_normalized = normalize_depth(original_invdepthmap)
+            # depth_freeze_shape_normalized = normalize_depth(render_pkg["depth"])
+            # original_invdepthmap_normalized = normalize_depth(original_invdepthmap)
 
-            combined_depth_np = np.hstack((depth_freeze_shape_normalized,
-                                           original_invdepthmap_normalized))
+            # combined_depth_np = np.hstack((depth_freeze_shape_normalized,
+            #                                original_invdepthmap_normalized))
 
-            # 使用迭代次数命名并保存为 PNG 文件
-            save_path = os.path.join(save_dir, f"depth_map_iter_{iteration}.png")
+            # # 使用迭代次数命名并保存为 PNG 文件
+            # save_path = os.path.join(save_dir, f"depth_map_iter_{iteration}.png")
 
-            # 保存为图像
-            from PIL import Image
-            Image.fromarray(combined_depth_np).save(save_path)
+            # # 保存为图像
+            # from PIL import Image
+            # Image.fromarray(combined_depth_np).save(save_path)
             
         else:
             patch_loss = 0
+
+        # ========== 高斯尺度和缩放正则化计算 ==========
+        loss_reg = torch.tensor(0., device=loss.device)
+        # 形状惩罚（防止过度拉伸）
+        shape_pena = (gaussians.get_scaling.max(dim=1).values / gaussians.get_scaling.min(dim=1).values).mean()
+        # 缩放惩罚（控制尺寸）
+        scale_pena = ((gaussians.get_scaling.max(dim=1, keepdim=True).values)**2).mean()
+        
+        # 总正则化损失
+        loss_reg += opt.shape_pena*shape_pena + opt.scale_pena*scale_pena
+        loss += loss_reg
 
         loss.backward()
 
@@ -218,10 +228,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             # Progress bar
             ema_loss_for_log = 0.4 * loss.item() + 0.6 * ema_loss_for_log
             ema_Ll1depth_for_log = 0.4 * Ll1depth + 0.6 * ema_Ll1depth_for_log
-            ema_patch_loss_for_log = 0.4 * patch_loss + 0.6 * ema_patch_loss_for_log
+            # ema_patch_loss_for_log = 0.4 * patch_loss + 0.6 * ema_patch_loss_for_log
 
             if iteration % 10 == 0:
-                progress_bar.set_postfix({"Loss": f"{ema_loss_for_log:.{7}f}", "Depth Loss": f"{ema_Ll1depth_for_log:.{7}f}", "Patch Loss": f"{ema_patch_loss_for_log:.{7}f}"})
+                progress_bar.set_postfix({"Loss": f"{ema_loss_for_log:.{7}f}", "Depth Loss": f"{ema_Ll1depth_for_log:.{7}f}"})
                 progress_bar.update(10)
             if iteration == opt.iterations:
                 progress_bar.close()
