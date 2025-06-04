@@ -69,6 +69,8 @@ class PipelineParams(ParamGroup):
         self.compute_cov3D_python = False
         self.debug = False
         self.antialiasing = False
+        self.add_noise = False  # render增加噪声
+        self.enable_quality_control = False  # 开启质量控制
         super().__init__(parser, "Pipeline Parameters")
 
 class OptimizationParams(ParamGroup):

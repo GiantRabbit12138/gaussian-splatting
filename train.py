@@ -45,6 +45,63 @@ import numpy as np
 from quality_control import QualityController, register_default_iqa
 from quality_control.utils import depth_patch_loss
 
+import torchvision
+import torch.nn.functional as F
+from torch import Tensor
+from typing import Callable, Dict, Optional, Tuple, Union
+import time
+import random
+
+def _patchify(img: Tensor, patch_size: int = 64) -> Tensor:
+    """
+    功能：将输入图像分割为不重叠的块
+    """
+
+    # 获取输入图像形状
+    b, c, h, w = img.shape
+    # 计算需要填充的像素数
+    pad_h = (patch_size - h % patch_size) % patch_size
+    pad_w = (patch_size - w % patch_size) % patch_size
+
+    # 执行边缘填充
+    img = F.pad(img, (0, pad_w, 0, pad_h), mode='reflect')
+
+    # 展开图像为块
+    patches = img.unfold(2, patch_size, patch_size)\
+                .unfold(3, patch_size, patch_size)\
+                .contiguous()\
+                .view(b, c, -1, patch_size, patch_size)\
+                .permute(0, 2, 1, 3, 4)\
+                .reshape(-1, c, patch_size, patch_size)
+    return patches
+
+def _unpatchify(patches: Tensor, original_shape: Tuple[int], patch_size: int) -> Tensor:
+    # 获取原始图像信息
+    b, c, h, w = original_shape
+
+    # 计算填充后的尺寸
+    pad_h = (patch_size - h % patch_size) % patch_size
+    pad_w = (patch_size - w % patch_size) % patch_size
+    h_pad = h + pad_h
+    w_pad = w + pad_w
+
+    # 计算分块数量
+    num_patches_h = h_pad // patch_size
+    num_patches_w = w_pad // patch_size
+
+    # 调整分块张量形状
+    patches = patches.reshape(b * num_patches_h * num_patches_w, c, patch_size, patch_size)
+    patches = patches.reshape(b, num_patches_h, num_patches_w, c, patch_size, patch_size)
+
+    # 合并分块
+    merged = patches.permute(0, 3, 1, 4, 2, 5).contiguous()  # [B, C, num_p_h, p, num_p_w, p]
+    merged = merged.reshape(b, c, num_patches_h * patch_size, num_patches_w * patch_size)
+
+    # 裁剪填充区域
+    merged = merged[:, :, :h, :w]
+
+    return merged
+
 def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoint_iterations, checkpoint, debug_from):
 
     if not SPARSE_ADAM_AVAILABLE and opt.optimizer_type == "sparse_adam":
@@ -68,8 +125,16 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     use_sparse_adam = opt.optimizer_type == "sparse_adam" and SPARSE_ADAM_AVAILABLE
     depth_l1_weight = get_expon_lr_func(opt.depth_l1_weight_init, opt.depth_l1_weight_final, max_steps=opt.iterations)
 
-    viewpoint_stack = scene.getTrainCameras().copy()
+    # viewpoint_stack = scene.getTrainCameras().copy()
+    # viewpoint_indices = list(range(len(viewpoint_stack)))
+    # 每隔n个相机选1个
+    # all_viewpoints = scene.getTrainCameras().copy()
+    # base_viewpoint_subset = random.sample(all_viewpoints, k=len(all_viewpoints)//2)
+    base_viewpoint_subset = scene.getTrainCameras().copy()[::2]  # 创建永久子集
+    viewpoint_stack = base_viewpoint_subset.copy()  # 初始化栈
     viewpoint_indices = list(range(len(viewpoint_stack)))
+    print(f"Using {len(viewpoint_stack)} cameras for training, total {len(scene.getTrainCameras())} cameras.")
+
     ema_loss_for_log = 0.0
     ema_Ll1depth_for_log = 0.0
     ema_patch_loss_for_log = 0.0
@@ -87,6 +152,10 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         debug_dir=os.path.join(dataset.model_path, "quality_debug")
     )
     register_default_iqa(quality_controller)
+
+    # 创建加了噪声的图像保存路径
+    save_dir_noisy = os.path.join(dataset.model_path, "render_add_noise")
+    os.makedirs(save_dir_noisy, exist_ok=True)
 
     for iteration in range(first_iter, opt.iterations + 1):
         if network_gui.conn == None:
@@ -114,7 +183,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
         # Pick a random Camera
         if not viewpoint_stack:
-            viewpoint_stack = scene.getTrainCameras().copy()
+            # viewpoint_stack = scene.getTrainCameras().copy()
+            # 当pop完所有相机后，重新填充栈
+            viewpoint_stack = base_viewpoint_subset.copy()
             viewpoint_indices = list(range(len(viewpoint_stack)))
         rand_idx = randint(0, len(viewpoint_indices) - 1)
         viewpoint_cam = viewpoint_stack.pop(rand_idx)
@@ -132,6 +203,48 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
         if viewpoint_cam.alpha_mask is not None:
             alpha_mask = viewpoint_cam.alpha_mask.cuda()
             image *= alpha_mask
+
+        # 增加噪声
+        add_noise = pipe.add_noise
+        image_noisy = None
+        if add_noise:
+            alpha_mask = viewpoint_cam.alpha_mask.cuda()
+            image_with_batch = image.unsqueeze(0)
+            alpha_mask_with_batch = alpha_mask.unsqueeze(0)
+
+            patch_size = 64
+            image_patches = _patchify(image_with_batch, patch_size)
+            alpha_patches = _patchify(alpha_mask_with_batch, patch_size)
+
+            noise_patches = torch.randn_like(image_patches) * 0.1
+
+            # --- 修改1：定义噪声块数量 ---
+            num_noisy_patches = 10  # 可调整参数
+
+            # 原有效区域判断
+            valid_mask = (alpha_patches.mean(dim=[1, 2, 3]) > 0.5)
+
+            # --- 修改2：随机选择n个有效块 ---
+            valid_indices = torch.where(valid_mask)[0]
+            num_valid = valid_indices.shape[0]
+            if num_valid > 0:
+                n_selected = min(num_noisy_patches, num_valid)
+                selected_indices = valid_indices[torch.randperm(num_valid)[:n_selected]]
+                selected_mask = torch.zeros_like(valid_mask)
+                selected_mask[selected_indices] = True
+            else:
+                selected_mask = torch.zeros_like(valid_mask, dtype=torch.bool)
+
+            # --- 修改3：应用选中掩码添加噪声 ---
+            image_patches[selected_mask] += noise_patches[selected_mask]
+
+            # 合并分块并保存
+            image_noisy_padded = _unpatchify(image_patches, image_with_batch.shape, patch_size)
+            image_noisy = image_noisy_padded.squeeze(0)
+            # torchvision.utils.save_image(image_noisy, f"{save_dir_noisy}/{viewpoint_cam.image_name}_noisy.png")
+
+        if add_noise and image_noisy is not None:
+            image = image_noisy
 
         # Loss
         gt_image = viewpoint_cam.original_image.cuda()
@@ -157,24 +270,27 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             Ll1depth = Ll1depth.item()
         else:
             Ll1depth = 0
-            
+
+        # 质量控制模块
+        enable_quality_control = pipe.enable_quality_control
         patch_loss_pure = torch.tensor(0., device=loss.device)
-        if iteration % 200 == 0 and viewpoint_cam.depth_reliable:
+        if iteration % 200 == 0 and viewpoint_cam.depth_reliable and enable_quality_control:
             depth_mask = viewpoint_cam.depth_mask.cuda()
             original_invdepthmap = viewpoint_cam.original_invdepthmap.cuda() * depth_mask
+            render_invdepthmap = render_pkg["depth"] * depth_mask
             with torch.no_grad():
                 quality_mask = quality_controller.process(
                     gt_rgb=gt_image,
                     render_rgb=image,
-                    method='psnr',
-                    threshold=30.0,
+                    method='fish',
+                    threshold=0.01,
                     save_debug=False
                 )
 
             # quality_mask shape: torch.Size([1, 720, 1280])
             # 计算损失
             patch_loss_pure = depth_patch_loss(
-                depth_render=render_pkg["depth"].unsqueeze(0),
+                depth_render=render_invdepthmap.unsqueeze(0),
                 depth_gt=original_invdepthmap.unsqueeze(0),
                 quality_mask=quality_mask.unsqueeze(1),
                 patch_size=64
@@ -182,7 +298,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             patch_loss = depth_l1_weight(iteration) * patch_loss_pure
             loss += patch_loss
             # patch_loss = patch_loss.item()
-            
+
             # def normalize_depth(depth_tensor):
             #     depth = depth_tensor.detach().cpu().numpy().squeeze()
             #     depth_min = depth.min()
@@ -193,7 +309,7 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             #         depth = np.zeros_like(depth)  # 防止全零或无效数据导致除零错误
             #     return depth.astype(np.uint8)
 
-            # depth_freeze_shape_normalized = normalize_depth(render_pkg["depth"])
+            # depth_freeze_shape_normalized = normalize_depth(render_invdepthmap)
             # original_invdepthmap_normalized = normalize_depth(original_invdepthmap)
 
             # combined_depth_np = np.hstack((depth_freeze_shape_normalized,
@@ -205,20 +321,20 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             # # 保存为图像
             # from PIL import Image
             # Image.fromarray(combined_depth_np).save(save_path)
-            
+
         else:
             patch_loss = 0
 
-        # ========== 高斯尺度和缩放正则化计算 ==========
-        loss_reg = torch.tensor(0., device=loss.device)
-        # 形状惩罚（防止过度拉伸）
-        shape_pena = (gaussians.get_scaling.max(dim=1).values / gaussians.get_scaling.min(dim=1).values).mean()
-        # 缩放惩罚（控制尺寸）
-        scale_pena = ((gaussians.get_scaling.max(dim=1, keepdim=True).values)**2).mean()
-        
-        # 总正则化损失
-        loss_reg += opt.shape_pena*shape_pena + opt.scale_pena*scale_pena
-        loss += loss_reg
+        # # ========== 高斯尺度和缩放正则化计算 ==========
+        # loss_reg = torch.tensor(0., device=loss.device)
+        # # 形状惩罚（防止过度拉伸）
+        # shape_pena = (gaussians.get_scaling.max(dim=1).values / gaussians.get_scaling.min(dim=1).values).mean()
+        # # 缩放惩罚（控制尺寸）
+        # scale_pena = ((gaussians.get_scaling.max(dim=1, keepdim=True).values)**2).mean()
+
+        # # 总正则化损失
+        # loss_reg += opt.shape_pena*shape_pena + opt.scale_pena*scale_pena
+        # loss += loss_reg
 
         loss.backward()
 
@@ -278,6 +394,8 @@ def prepare_output_and_logger(args):
         else:
             unique_str = str(uuid.uuid4())
         args.model_path = os.path.join("./output/", unique_str[0:10])
+    else:
+        args.model_path = os.path.join("", args.model_path)
 
     # Set up output folder
     print("Output folder: {}".format(args.model_path))
@@ -362,7 +480,23 @@ if __name__ == "__main__":
     if not args.disable_viewer:
         network_gui.init(args.ip, args.port)
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
+
+    # ====== 开始计时 ======
+    start_time = time.time()
     training(lp.extract(args), op.extract(args), pp.extract(args), args.test_iterations, args.save_iterations, args.checkpoint_iterations, args.start_checkpoint, args.debug_from)
+    end_time = time.time()
+
+    # ====== 写入总时间 ======
+    total_time = end_time - start_time
+    minutes = int(total_time // 60)
+    seconds = total_time % 60
+    # 格式化为“X 分钟 Y 秒”，保留两位小数
+    time_str = f"{minutes} minute(s) {seconds:.2f} second(s)"
+
+    time_log_path = os.path.join(args.model_path, "total_training_time.txt")
+    with open(time_log_path, 'w') as f:
+        f.write(f"Total training time: {time_str}\n")
+    print(f"Total training time: {time_str}")
 
     # All done
     print("\nTraining complete.")
