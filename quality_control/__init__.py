@@ -16,6 +16,8 @@ import matplotlib.pyplot as plt
 from torchvision.utils import save_image
 import numpy as np
 
+from quality_control.fish import fish
+
 class QualityController:
     def __init__(
         self,
@@ -69,11 +71,12 @@ class QualityController:
         # 质量评估
         score_func = self.iqa_methods[method]
         scores = score_func(gt_patches, render_patches)
+        # print(f"{method}得分: {scores}")
 
         # 阈值处理
         if adaptive:
             threshold = self._calculate_adaptive_threshold(scores)
-        patch_mask = (scores < threshold).float()
+        patch_mask = ((scores > 0) & (scores < threshold)).float()
 
         # 重组掩码
         full_mask = self._unpatchify(patch_mask, gt_rgb.shape)
@@ -197,3 +200,28 @@ def register_default_iqa(controller: QualityController):
     def ssim(gt, render):
         return torch.ones(gt.size(0), device=gt.device)  # 实际需实现
     controller.register_iqa('ssim', ssim)
+
+    # 注册 fish 方法
+    def fish_wrapper(gt_patches, render_patches):
+        """
+        包装 fish 函数以适配 Tensor 输入
+        输入: (B, C, H, W) 的 Tensor
+        输出: (B,) 的 Tensor 分数
+        """
+        # 将 Tensor 转换为 numpy 数组
+        batch_size = gt_patches.size(0)
+        scores = []
+
+        # 移动到 CPU 并转换为 numpy
+        gt_np = gt_patches.permute(0, 2, 3, 1).cpu().numpy()
+        render_np = render_patches.permute(0, 2, 3, 1).cpu().numpy()
+
+        # 遍历每个 patch，调用 fish 函数
+        for i in range(batch_size):
+            # 注意：fish 函数处理的是 RGB 图像，输入应为 (H, W, 3)
+            score = fish(gt_np[i])
+            scores.append(score)
+
+        return torch.tensor(scores, device=gt_patches.device)
+
+    controller.register_iqa('fish', fish_wrapper)
