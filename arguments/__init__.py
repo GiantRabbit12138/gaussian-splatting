@@ -3,7 +3,7 @@
 # GRAPHDECO research group, https://team.inria.fr/graphdeco
 # All rights reserved.
 #
-# This software is free for non-commercial, research and evaluation use 
+# This software is free for non-commercial, research and evaluation use
 # under the terms of the LICENSE.md file.
 #
 # For inquiries contact  george.drettakis@inria.fr
@@ -25,7 +25,7 @@ class ParamGroup:
                 shorthand = True
                 key = key[1:]
             t = type(value)
-            value = value if not fill_none else None 
+            value = value if not fill_none else None
             if shorthand:
                 if t == bool:
                     group.add_argument("--" + key, ("-" + key[0:1]), default=value, action="store_true")
@@ -44,7 +44,7 @@ class ParamGroup:
                 setattr(group, arg[0], arg[1])
         return group
 
-class ModelParams(ParamGroup): 
+class ModelParams(ParamGroup):
     def __init__(self, parser, sentinel=False):
         self.sh_degree = 3
         self._source_path = ""
@@ -69,8 +69,9 @@ class PipelineParams(ParamGroup):
         self.compute_cov3D_python = False
         self.debug = False
         self.antialiasing = False
-        self.add_noise = False  # render增加噪声
         self.enable_quality_control = False  # 开启质量控制
+        self.enable_distortion_net = False  # 开启失真网络
+        self.train_cam_percentage = 100.0  # 训练相机百分数
         super().__init__(parser, "Pipeline Parameters")
 
 class OptimizationParams(ParamGroup):
