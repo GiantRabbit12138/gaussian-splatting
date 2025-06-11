@@ -18,7 +18,7 @@ dataset_names: List[str] = [
     "white_box",
 ]
 
-postfix_str = "_mask_rgb_mono_depth_0.5_view"
+postfix_str = "_mask_rgb_mono_depth_full_view_distortion_qc"
 output_names: List[str] = [
     "book"+postfix_str,
     "cube_knife"+postfix_str,
@@ -46,8 +46,8 @@ BASE_OUTPUT_DIR = "./output"     # 输出根目录
 TRAIN_IMAGE_DIR = "images_add_masks"     # 对应 -i 参数
 TRAIN_DEPTH_DIR = "mono_depth_maps"      # 对应 -d 参数
 TRAIN_FLAGS = ["--eval",  # 开启评估
-            #    "--add_noise",  # 增加加性高斯噪声
-            #    "--enable_quality_control"  # 开启质量控制模块
+               "--enable_distortion_net",  # 图像失真模块
+               "--enable_quality_control"  # 开启质量控制模块
                ]
 
 # ====== 执行函数 ======
@@ -85,7 +85,8 @@ def process_dataset(data_name: str, output_name: str) -> bool:
         "-s", source_path,
         "-i", TRAIN_IMAGE_DIR,
         "-d", TRAIN_DEPTH_DIR,
-        "-m", model_path
+        "-m", model_path,
+        "--train_cam_percentage", "100",
     ] + TRAIN_FLAGS
 
     if not run_command(train_cmd, "训练"):
