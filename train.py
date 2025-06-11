@@ -52,6 +52,8 @@ from typing import Callable, Dict, Optional, Tuple, Union
 import time
 import random
 
+from quality_control.distortion_network import DistortionNet, DistortionArgs
+
 def _patchify(img: Tensor, patch_size: int = 64) -> Tensor:
     """
     功能：将输入图像分割为不重叠的块
@@ -127,10 +129,13 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
 
     # viewpoint_stack = scene.getTrainCameras().copy()
     # viewpoint_indices = list(range(len(viewpoint_stack)))
-    # 每隔n个相机选1个
-    # all_viewpoints = scene.getTrainCameras().copy()
-    # base_viewpoint_subset = random.sample(all_viewpoints, k=len(all_viewpoints)//2)
-    base_viewpoint_subset = scene.getTrainCameras().copy()[::2]  # 创建永久子集
+    # 由训练相机的百分比计算step
+    train_cam_percentage = pipe.train_cam_percentage
+    print(f"train_cam_percentage: {train_cam_percentage}")
+    if train_cam_percentage <= 0 or train_cam_percentage > 100:
+        raise ValueError(f"train_cam_percentage 参数无效: {args.train_cam_percentage}")
+    step = max(1, int(100 / train_cam_percentage)) if train_cam_percentage > 0 else 1
+    base_viewpoint_subset = scene.getTrainCameras().copy()[::step]
     viewpoint_stack = base_viewpoint_subset.copy()  # 初始化栈
     viewpoint_indices = list(range(len(viewpoint_stack)))
     print(f"Using {len(viewpoint_stack)} cameras for training, total {len(scene.getTrainCameras())} cameras.")
@@ -145,17 +150,27 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     save_dir = os.path.join(dataset.model_path, "depth_debug")
     os.makedirs(save_dir, exist_ok=True)
 
-    # 在 training 函数中初始化 QualityController
-    quality_controller = QualityController(
-        patch_size=64,
-        device="cuda" if torch.cuda.is_available() else "cpu",
-        debug_dir=os.path.join(dataset.model_path, "quality_debug")
-    )
-    register_default_iqa(quality_controller)
-
     # 创建加了噪声的图像保存路径
     save_dir_noisy = os.path.join(dataset.model_path, "render_add_noise")
     os.makedirs(save_dir_noisy, exist_ok=True)
+
+    # 失真网络
+    enable_distortion_net = pipe.enable_distortion_net
+    if enable_distortion_net:
+        # 初始化模块和参数
+        args = DistortionArgs()
+        distortion_net = DistortionNet(args)
+
+    # 质量控制模块
+    enable_quality_control = pipe.enable_quality_control
+    if enable_quality_control:
+        # 在 training 函数中初始化 QualityController
+        quality_controller = QualityController(
+            patch_size=64,
+            device="cuda" if torch.cuda.is_available() else "cpu",
+            debug_dir=os.path.join(dataset.model_path, "quality_debug")
+        )
+        register_default_iqa(quality_controller)
 
     for iteration in range(first_iter, opt.iterations + 1):
         if network_gui.conn == None:
@@ -204,10 +219,9 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             alpha_mask = viewpoint_cam.alpha_mask.cuda()
             image *= alpha_mask
 
-        # 增加噪声
-        add_noise = pipe.add_noise
-        image_noisy = None
-        if add_noise:
+        # 图像失真
+        image_distorted = None
+        if enable_distortion_net and iteration % 100 == 0:
             alpha_mask = viewpoint_cam.alpha_mask.cuda()
             image_with_batch = image.unsqueeze(0)
             alpha_mask_with_batch = alpha_mask.unsqueeze(0)
@@ -216,7 +230,8 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             image_patches = _patchify(image_with_batch, patch_size)
             alpha_patches = _patchify(alpha_mask_with_batch, patch_size)
 
-            noise_patches = torch.randn_like(image_patches) * 0.1
+            # 旧方法: 增加均值为0, 方差为0.1的噪声
+            # noise_patches = torch.randn_like(image_patches) * 0.1
 
             # --- 修改1：定义噪声块数量 ---
             num_noisy_patches = 10  # 可调整参数
@@ -233,18 +248,27 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
                 selected_mask = torch.zeros_like(valid_mask)
                 selected_mask[selected_indices] = True
             else:
-                selected_mask = torch.zeros_like(valid_mask, dtype=torch.bool)
+                print("No valid patches found. Skipping distortion step.")
+                continue
 
             # --- 修改3：应用选中掩码添加噪声 ---
-            image_patches[selected_mask] += noise_patches[selected_mask]
+            # image_patches[selected_mask] += noise_patches[selected_mask]
 
-            # 合并分块并保存
-            image_noisy_padded = _unpatchify(image_patches, image_with_batch.shape, patch_size)
-            image_noisy = image_noisy_padded.squeeze(0)
-            # torchvision.utils.save_image(image_noisy, f"{save_dir_noisy}/{viewpoint_cam.image_name}_noisy.png")
+            # 新方法: 使用失真网络模拟图像失真
+            with torch.no_grad():
+                distorted_patches, _ = distortion_net(image_patches[selected_mask])
+            image_patches[selected_mask] = distorted_patches
 
-        if add_noise and image_noisy is not None:
-            image = image_noisy
+            # 合并分块并保存BCHW
+            image_distorted_padded = _unpatchify(image_patches,
+                                                 image_with_batch.shape,
+                                                 patch_size)
+            # BCHW->CHW
+            image_distorted = image_distorted_padded.squeeze(0)
+
+        if enable_distortion_net and image_distorted is not None:
+            image = image_distorted
+            torchvision.utils.save_image(image, f"{save_dir_noisy}/{viewpoint_cam.image_name}_noisy.png")
 
         # Loss
         gt_image = viewpoint_cam.original_image.cuda()
@@ -272,7 +296,6 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
             Ll1depth = 0
 
         # 质量控制模块
-        enable_quality_control = pipe.enable_quality_control
         patch_loss_pure = torch.tensor(0., device=loss.device)
         if iteration % 200 == 0 and viewpoint_cam.depth_reliable and enable_quality_control:
             depth_mask = viewpoint_cam.depth_mask.cuda()
