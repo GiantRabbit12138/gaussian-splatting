@@ -10,7 +10,7 @@
             "request": "launch",
             "program": "${workspaceFolder}/train.py",
             "console": "integratedTerminal",
-            "args": "-s ./data/book -i images_add_masks -d mono_depth_maps -m ./output/0_train_view --eval"
+            "args": "-s ./data/book -i images_add_masks -d depths -m ./output/0_test_fish_remove_cams --eval --train_cam_percentage 100 --remove_duplicate_cameras"
         }
     ]
 }
