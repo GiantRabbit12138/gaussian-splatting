@@ -133,12 +133,27 @@ def training(dataset, opt, pipe, testing_iterations, saving_iterations, checkpoi
     train_cam_percentage = pipe.train_cam_percentage
     print(f"train_cam_percentage: {train_cam_percentage}")
     if train_cam_percentage <= 0 or train_cam_percentage > 100:
-        raise ValueError(f"train_cam_percentage 参数无效: {args.train_cam_percentage}")
-    step = max(1, int(100 / train_cam_percentage)) if train_cam_percentage > 0 else 1
-    base_viewpoint_subset = scene.getTrainCameras().copy()[::step]
+        raise ValueError(f"train_cam_percentage 参数无效: {train_cam_percentage}")
+
+    all_train_cameras = scene.getTrainCameras()
+    num_total = len(all_train_cameras)
+
+    # 计算实际需要选择的相机数量（四舍五入）
+    num_selected = max(1, round(num_total * train_cam_percentage / 100))
+
+    # 生成均匀分布的索引
+    indices = []
+    if num_selected == 1:
+        indices = [0]  # 只有一个相机时选择第一个
+    elif num_selected > 1:
+        step = (num_total - 1) / (num_selected - 1)  # 索引步长（浮点数）
+        indices = [round(i * step) for i in range(num_selected)]  # 四舍五入取整
+
+    # 根据索引选择相机
+    base_viewpoint_subset = [all_train_cameras[i] for i in indices]
     viewpoint_stack = base_viewpoint_subset.copy()  # 初始化栈
     viewpoint_indices = list(range(len(viewpoint_stack)))
-    print(f"Using {len(viewpoint_stack)} cameras for training, total {len(scene.getTrainCameras())} cameras.")
+    print(f"Using {len(viewpoint_stack)} cameras for training, total {num_total} cameras.")
 
     ema_loss_for_log = 0.0
     ema_Ll1depth_for_log = 0.0
