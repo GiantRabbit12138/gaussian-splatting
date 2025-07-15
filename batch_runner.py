@@ -18,7 +18,7 @@ dataset_names: List[str] = [
     "white_box",
 ]
 
-postfix_str = "_mask_rgb_mono_depth_full_view_distortion_qc"
+postfix_str = "_dense_fish_remove_duplicate_cams"
 output_names: List[str] = [
     "book"+postfix_str,
     "cube_knife"+postfix_str,
@@ -46,9 +46,24 @@ BASE_OUTPUT_DIR = "./output"     # 输出根目录
 TRAIN_IMAGE_DIR = "images_add_masks"     # 对应 -i 参数
 TRAIN_DEPTH_DIR = "mono_depth_maps"      # 对应 -d 参数
 TRAIN_FLAGS = ["--eval",  # 开启评估
-               "--enable_distortion_net",  # 图像失真模块
-               "--enable_quality_control"  # 开启质量控制模块
+            #    "--enable_distortion_net",  # 图像失真模块
+            #    "--enable_quality_control",  # 开启质量控制模块
+                "--remove_duplicate_cameras",
+                "--densify_pointcloud",
                ]
+
+# 均匀采样时的相机采样比例
+TRAIN_CAM_PERCENTAGE = {dataset_names[0] : "89",
+                        dataset_names[1] : "52",
+                        dataset_names[2] : "72",
+                        dataset_names[3] : "55",
+                        dataset_names[4] : "88",
+                        dataset_names[5] : "62",
+                        dataset_names[6] : "54",
+                        dataset_names[7] : "46",
+                        dataset_names[8] : "63",
+                        dataset_names[9] : "70",
+                        dataset_names[10] : "58"}
 
 # ====== 执行函数 ======
 def run_command(command: List[str], step_name: str, cwd: str = None) -> bool:
@@ -86,7 +101,7 @@ def process_dataset(data_name: str, output_name: str) -> bool:
         "-i", TRAIN_IMAGE_DIR,
         "-d", TRAIN_DEPTH_DIR,
         "-m", model_path,
-        "--train_cam_percentage", "100",
+        # "--train_cam_percentage", TRAIN_CAM_PERCENTAGE[data_name],
     ] + TRAIN_FLAGS
 
     if not run_command(train_cmd, "训练"):
