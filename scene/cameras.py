@@ -63,6 +63,7 @@ class Camera(nn.Module):
         self.image_height = self.original_image.shape[1]
 
         self.invdepthmap = None
+        self.original_invdepthmap = None
         self.depth_reliable = False
         if invdepthmap is not None:
             # self.depth_mask = torch.ones_like(self.alpha_mask)
@@ -114,4 +115,3 @@ class MiniCam:
         self.full_proj_transform = full_proj_transform
         view_inv = torch.inverse(self.world_view_transform)
         self.camera_center = view_inv[3][:3]
-
