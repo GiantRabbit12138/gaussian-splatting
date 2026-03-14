@@ -18,7 +18,7 @@ dataset_names: List[str] = [
     "white_box",
 ]
 
-postfix_str = "_dense_fish_remove_duplicate_cams"
+postfix_str = "_ours_custom_data_fused_depth_MAP_dense_iftc"
 output_names: List[str] = [
     "book"+postfix_str,
     "cube_knife"+postfix_str,
@@ -43,12 +43,12 @@ BASE_OUTPUT_DIR = "./output"     # 输出根目录
 
 # ====== 训练参数配置 ======
 # train.py的固定参数（根据实际情况修改）
-TRAIN_IMAGE_DIR = "images_add_masks"     # 对应 -i 参数
-TRAIN_DEPTH_DIR = "mono_depth_maps"      # 对应 -d 参数
+TRAIN_IMAGE_DIR = "images"     # 对应 -i 参数
+TRAIN_DEPTH_DIR = "fused_depths_MAP"      # 对应 -d 参数
 TRAIN_FLAGS = ["--eval",  # 开启评估
             #    "--enable_distortion_net",  # 图像失真模块
             #    "--enable_quality_control",  # 开启质量控制模块
-                "--remove_duplicate_cameras",
+            #     "--remove_duplicate_cameras",
                 "--densify_pointcloud",
                ]
 
